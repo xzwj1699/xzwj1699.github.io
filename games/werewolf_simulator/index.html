@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>狼人杀模拟器 (PyScript)</title>
+    <!-- PyScript -->
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
+    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
+        .container { display: grid; grid-template-columns: 250px 1fr 300px; gap: 20px; height: 90vh; }
+        .panel { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); overflow-y: auto; }
+        
+        /* Timeline */
+        .timeline-item { padding: 10px; border-left: 3px solid #ddd; margin-bottom: 5px; cursor: pointer; transition: background 0.2s; }
+        .timeline-item:hover { background-color: #f0f0f0; }
+        .timeline-item.active { border-left-color: #2196F3; background-color: #e3f2fd; }
+        .phase-tag { font-size: 0.8em; padding: 2px 5px; border-radius: 4px; background: #eee; color: #555; }
+        
+        /* Main View */
+        .game-board { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 15px; margin-top: 20px; }
+        .player-card { border: 2px solid #ddd; padding: 15px; border-radius: 8px; text-align: center; position: relative; }
+        .player-card.dead { opacity: 0.6; background-color: #f8d7da; border-color: #f5c6cb; }
+        .player-card.exiled { opacity: 0.6; background-color: #e2e3e5; border-color: #d6d8db; position: relative; }
+        .player-card.wolf { border-color: #dc3545; } /* Only visible if known */
+        .player-card.seer { border-color: #17a2b8; }
+        .player-card.witch { border-color: #6f42c1; }
+        .player-card.hunter { border-color: #fd7e14; }
+        .player-card.villager { border-color: #28a745; }
+        
+        .role-badge { display: inline-block; padding: 3px 8px; border-radius: 12px; color: white; font-weight: bold; font-size: 0.9em; margin-bottom: 5px; }
+        .badge-wolf { background-color: #dc3545; }
+        .badge-seer { background-color: #17a2b8; }
+        .badge-witch { background-color: #6f42c1; }
+        .badge-hunter { background-color: #fd7e14; }
+        .badge-villager { background-color: #28a745; }
+        .badge-unknown { background-color: #6c757d; }
+        
+        /* Status Badges */
+        .status-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 3px; margin-top: 2px; color: #fff; }
+        .badge-gold { background-color: #ffc107; color: #212529; }
+        .badge-silver { background-color: #adb5bd; }
+        .badge-kill { background-color: #343a40; }
+        
+        /* Controls */
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; }
+        button { padding: 8px 16px; border: none; border-radius: 4px; background-color: #2196F3; color: white; cursor: pointer; }
+        button:hover { background-color: #0b7dda; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        select { padding: 8px; border-radius: 4px; border: 1px solid #ddd; }
+        
+        /* Event Detail */
+        .event-detail { margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 4px; border: 1px solid #ffeeba; }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <button onclick="newGame()">新对局</button>
+        <span>种子: <input type="number" id="seed-input" value="1" style="width: 60px;"></span>
+        <span>人数: 
+            <select id="player-count-select">
+                <option value="6">6人局 (2狼 2民 预女)</option>
+                <option value="9">9人局 (3狼 3民 预女猎)</option>
+                <option value="12">12人局 (4狼 5民 预女猎)</option>
+                <option value="15">15人局 (5狼 5民 预女猎民)</option>
+            </select>
+        </span>
+        <div style="flex-grow: 1;"></div>
+        <label>当前视角: 
+            <select id="view-select" onchange="changeView()">
+
+                <option value="-1">上帝视角 (全知)</option>
+                <!-- Players will be added here -->
+            </select>
+        </label>
+    </div>
+
+    <div class="container">
+        <!-- Left: Timeline -->
+        <div class="panel" id="timeline-panel">
+            <h3>时间线</h3>
+            <div id="timeline-list"></div>
+        </div>
+
+        <!-- Center: Game Board -->
+        <div class="panel">
+            <h2 id="phase-display">等待开始...</h2>
+            <div id="current-event-display" class="event-detail" style="display:none;"></div>
+            
+            <div class="game-board" id="game-board">
+                <!-- Player cards -->
+            </div>
+        </div>
+
+        <!-- Right: Info/Analysis -->
+        <div class="panel">
+            <h3>分析/信息</h3>
+            <div id="analysis-content">
+                <p>点击时间线查看详情。</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- PyScript Config -->
+    <py-config>
+        packages = []
+        [[fetch]]
+        from = "."
+        files = ["web_bridge.py"]
+        [[fetch]]
+        from = "./werewolf"
+        to_folder = "werewolf"
+        files = ["__init__.py", "engine.py", "models.py", "simulator.py", "strategy.py", "logger.py"]
+    </py-config>
+
+    <!-- PyScript Code -->
+    <py-script>
+        import js
+        import json
+        import web_bridge
+        from pyodide.ffi import create_proxy
+
+        def new_game_py(seed, player_count):
+            try:
+                data = web_bridge.new_game(seed, player_count)
+                # Convert Python dict to JS object
+                return json.dumps(data)
+            except Exception as e:
+                print(f"Error in new_game: {e}")
+                return json.dumps({"error": str(e)})
+
+        def get_step_py(step_index, view_player_id):
+            try:
+                data = web_bridge.get_game_step(step_index, view_player_id)
+                return json.dumps(data)
+            except Exception as e:
+                print(f"Error in get_step: {e}")
+                return json.dumps({"error": str(e)})
+
+        # Expose to JS
+        js.new_game_py = new_game_py
+        js.get_step_py = get_step_py
+        
+        print("PyScript initialized. Ready to play.")
+    </py-script>
+
+    <script>
+        let gameState = {
+            totalSteps: 0,
+            roles: {}, // Known roles in current view
+            allRoles: {}, // All roles for God view dropdown
+            currentStep: 0,
+            viewPlayerId: -1
+        };
+
+        const ROLE_NAMES = {
+            'WOLF': '狼人',
+            'SEER': '预言家',
+            'WITCH': '女巫',
+            'HUNTER': '猎人',
+            'VILLAGER': '村民'
+        };
+        
+        const ROLE_CLASSES = {
+            'WOLF': 'badge-wolf',
+            'SEER': 'badge-seer',
+            'WITCH': 'badge-witch',
+            'HUNTER': 'badge-hunter',
+            'VILLAGER': 'badge-villager'
+        };
+
+        async function newGame() {
+            const seedInput = document.getElementById('seed-input');
+            const seed = seedInput ? seedInput.value : 1;
+            const playerCountSelect = document.getElementById('player-count-select');
+            const playerCount = playerCountSelect ? parseInt(playerCountSelect.value) : 6;
+            
+            try {
+                if (!window.new_game_py) {
+                    alert("PyScript 正在加载中，请稍候...");
+                    return;
+                }
+
+                console.log("Calling PyScript new_game_py...");
+                const resultJson = window.new_game_py(parseInt(seed), playerCount);
+                const data = JSON.parse(resultJson);
+                
+                if (data.error) throw new Error(data.error);
+                
+                gameState.totalSteps = data.total_steps;
+                gameState.allRoles = data.roles; // Store full role list for dropdown
+                gameState.roles = data.roles;    // Current view roles (initially God view)
+                
+                renderViewSelector(data.roles);
+                await renderTimeline(data.total_steps);
+                
+                // Select first step
+                if (data.total_steps > 0) {
+                    await loadStep(0);
+                }
+            } catch (e) {
+                console.error("New Game Failed", e);
+                alert("启动新对局失败: " + e.message);
+            }
+        }
+
+        function loadFromStaticData(data) {
+            console.log("Loading from static data...");
+            gameState.totalSteps = data.total_steps;
+            gameState.allRoles = data.roles;
+            gameState.roles = data.roles;
+            
+            // Hide controls that don't make sense in static mode
+            const seedCtrl = document.getElementById('seed-input');
+            if (seedCtrl) seedCtrl.parentElement.style.display = 'none';
+            const newGameBtn = document.querySelector('button[onclick="newGame()"]');
+            if (newGameBtn) newGameBtn.style.display = 'none';
+            
+            renderViewSelector(data.roles);
+            renderTimeline(data.total_steps); // No await needed
+            
+            if (data.total_steps > 0) {
+                loadStep(0);
+            }
+        }
+
+        function renderViewSelector(roles) {
+            const select = document.getElementById('view-select');
+            select.innerHTML = '<option value="-1">上帝视角 (全知)</option>';
+            Object.keys(roles).forEach(pid => {
+                const opt = document.createElement('option');
+                opt.value = pid;
+                // Show role name in dropdown for debugging/God view convenience
+                // In a real game, maybe hide it? But this is a simulator.
+                const roleName = ROLE_NAMES[roles[pid]] || '未知';
+                opt.text = `玩家 ${pid} (${roleName})`;
+                select.appendChild(opt);
+            });
+        }
+
+        async function renderTimeline(count) {
+            const list = document.getElementById('timeline-list');
+            list.innerHTML = '';
+            
+            for (let i = 0; i < count; i++) {
+                const item = document.createElement('div');
+                item.className = 'timeline-item';
+                item.innerText = `Step ${i + 1}`; // Placeholder
+                item.id = `timeline-step-${i}`;
+                item.onclick = () => loadStep(i);
+                list.appendChild(item);
+            }
+            
+            // Pre-fetch descriptions? Or just show step numbers for now.
+            // Let's keep it simple: load descriptions on demand or batch later.
+        }
+
+        async function loadStep(index) {
+            gameState.currentStep = index;
+            
+            // Highlight timeline
+            document.querySelectorAll('.timeline-item').forEach(el => el.classList.remove('active'));
+            const activeItem = document.getElementById(`timeline-step-${index}`);
+            if(activeItem) activeItem.classList.add('active');
+
+            // Fetch step data with current view filter
+            const select = document.getElementById('view-select');
+            const viewId = select ? select.value : -1;
+            
+            // Check for static data
+            if (window.GAME_DATA && window.GAME_STEPS) {
+                // Emulate backend filtering logic in frontend
+                const stepData = getStaticStepData(index, viewId);
+                renderBoard(stepData, viewId);
+                updateTimelineItem(index, stepData.event);
+                return;
+            }
+
+            try {
+                if (!window.get_step_py) {
+                     // Fallback to fetch if PyScript not ready or not used?
+                     console.warn("PyScript get_step_py not found, trying fetch fallback...");
+                     const query = viewId == -1 ? '' : `?view_player_id=${viewId}`;
+                     const res = await fetch(`/api/game/step/${index}${query}`);
+                     if (!res.ok) throw new Error('Step API Error');
+                     const data = await res.json();
+                     renderBoard(data, viewId);
+                     updateTimelineItem(index, data.event);
+                     return;
+                }
+
+                // console.log(`Calling PyScript get_step_py(${index}, ${viewId})...`);
+                const resultJson = window.get_step_py(parseInt(index), parseInt(viewId));
+                const data = JSON.parse(resultJson);
+                
+                if (data.error) throw new Error(data.error);
+                
+                renderBoard(data, viewId);
+                updateTimelineItem(index, data.event);
+            } catch (e) {
+                console.error("Load Step Failed", e);
+            }
+        }
+
+        function getStaticStepData(index, viewId) {
+            // This function mimics the backend 'get_game_step' logic
+            const allEvents = window.GAME_STEPS;
+            const allRoles = window.GAME_DATA.roles;
+            const event = allEvents[index];
+            
+            // Filter event visibility
+            let visibleEvent = {...event}; // Shallow copy
+            let isVisible = false;
+            
+            // Visibility Logic
+            // God view
+            if (viewId == -1) {
+                isVisible = true;
+            } else {
+                const pid = parseInt(viewId);
+                const phase = event.phase;
+                const actor = event.actor_id;
+                
+                if (['DAY_VOTE', 'GAME_OVER'].includes(phase)) {
+                    isVisible = true;
+                } else if (actor === pid) {
+                    isVisible = true;
+                } else {
+                    const myRole = allRoles[pid];
+                    const actorRole = allRoles[actor] || null; // actor might be null
+                    if (myRole === 'WOLF' && actorRole === 'WOLF') {
+                        isVisible = true;
+                    }
+                }
+            }
+            
+            if (!isVisible) {
+                visibleEvent = {
+                    day: event.day,
+                    phase: event.phase,
+                    description: "夜晚发生了某些事情...",
+                    actor_id: null,
+                    target_id: null,
+                    is_hidden: true,
+                    recommendation: null
+                };
+            } else {
+                visibleEvent.is_hidden = false;
+                // Recommendation filtering
+                if (event.recommendation) {
+                    const pid = parseInt(viewId);
+                    // Only show rec if God or Actor
+                    // actor might be null (e.g. night kill resolve), in that case no one owns it?
+                    // if actor_id is null, it's a system event, usually public or hidden result.
+                    
+                    if (viewId == -1 || (event.actor_id !== null && event.actor_id === pid)) {
+                        visibleEvent.recommendation = event.recommendation;
+                    } else {
+                        visibleEvent.recommendation = null;
+                    }
+                }
+            }
+            
+            // Role filtering
+            let visibleRoles = {};
+            if (viewId == -1) {
+                visibleRoles = allRoles;
+            } else {
+                const pid = parseInt(viewId);
+                visibleRoles[pid] = allRoles[pid];
+                // Wolf sees Wolf
+                if (allRoles[pid] === 'WOLF') {
+                    Object.keys(allRoles).forEach(k => {
+                        if (allRoles[k] === 'WOLF') visibleRoles[k] = 'WOLF';
+                    });
+                }
+            }
+            
+            return {
+                step_index: index,
+                event: visibleEvent,
+                total_steps: allEvents.length,
+                roles: visibleRoles
+            };
+        }
+
+        function updateTimelineItem(index, event) {
+            const item = document.getElementById(`timeline-step-${index}`);
+            if (item) {
+                const desc = event.is_hidden ? "???" : event.description;
+                const phase = event.phase;
+                item.innerHTML = `
+                    <div style="font-weight: bold;">Step ${index+1}</div>
+                    <div style="font-size: 0.9em;">${desc}</div>
+                    <span class="phase-tag">${phase}</span>
+                `;
+            }
+        }
+
+        function renderBoard(data, viewId) {
+            const event = data.event;
+            const roles = data.roles; // Roles visible to current view
+            
+            // Update Header
+            const phaseText = document.getElementById('phase-display');
+            phaseText.innerText = `Day ${event.day} - ${event.phase}`;
+            
+            // Update Event Detail Panel
+            const eventDiv = document.getElementById('current-event-display');
+            eventDiv.style.display = 'block';
+            
+            let detailHtml = `<strong>${event.description}</strong>`;
+            if (event.is_hidden) {
+                detailHtml += `<br><span style="color:gray;">(详细信息对当前视角不可见)</span>`;
+            } else {
+                if (event.actor_id !== null) detailHtml += `<br>发起者: 玩家 ${event.actor_id}`;
+                if (event.target_id !== null) detailHtml += `<br>目标: 玩家 ${event.target_id}`;
+            }
+            
+            // Add Recommendation / Analysis Info
+            const analysisDiv = document.getElementById('analysis-content');
+            
+            // Build trust score table if available
+            let trustHtml = '';
+            if (event.trust_scores) {
+                const viewer = viewId == -1 ? null : parseInt(viewId);
+                
+                // If viewer is a specific player, show their trust scores towards others
+                if (viewer !== null && event.trust_scores[viewer]) {
+                    const scores = event.trust_scores[viewer];
+                    trustHtml += `<h5>玩家 ${viewer} 的信赖度:</h5><ul style="font-size:0.9em; padding-left:20px;">`;
+                    Object.keys(scores).forEach(target => {
+                        const score = scores[target];
+                        let color = 'black';
+                        if (score >= 0.8) color = 'green';
+                        if (score <= 0.2) color = 'red';
+                        trustHtml += `<li style="color:${color}">对 玩家 ${target}: ${(score*100).toFixed(0)}%</li>`;
+                    });
+                    trustHtml += '</ul>';
+                }
+                // If God view, show everyone's trust matrix? Too big.
+                // Just show nothing or a summary.
+            }
+
+            if (event.recommendation) {
+                const rec = event.recommendation;
+                let winRateHtml = '';
+                if (rec.win_rate !== null && rec.win_rate !== undefined) {
+                    const pct = (rec.win_rate * 100).toFixed(1);
+                    winRateHtml = `<p><strong>当前阵营预估胜率:</strong> ${pct}%</p>`;
+                }
+                
+                analysisDiv.innerHTML = `
+                    <div style="background:#e3f2fd; padding:10px; border-radius:4px; border-left:4px solid #2196F3;">
+                        <h4>策略引擎建议</h4>
+                        <p><strong>行动:</strong> ${rec.action_type} -> 玩家 ${rec.target_id !== null ? rec.target_id : '无'}</p>
+                        <p><strong>决策理由:</strong> ${rec.reason}</p>
+                        ${winRateHtml}
+                    </div>
+                    ${trustHtml}
+                `;
+            } else {
+                if (event.is_hidden) {
+                    analysisDiv.innerHTML = `<p style="color:gray;">事件信息隐藏，无法显示分析。</p>`;
+                } else {
+                    analysisDiv.innerHTML = `<p>暂无针对此事件的策略分析数据。</p>${trustHtml}`;
+                }
+            }
+            
+            // Vote Display in Event Detail
+            if (event.votes) {
+                const votes = event.votes;
+                const voteReasons = event.vote_reasons || {};
+                let voteHtml = '<div style="margin-top:10px; padding:10px; background:white; border-radius:4px; border:1px solid #ddd;"><h5>投票详情:</h5><ul style="padding-left:20px;">';
+                
+                // Group by target
+                const voteCounts = {};
+                Object.keys(votes).forEach(voter => {
+                    const target = votes[voter];
+                    if (!voteCounts[target]) voteCounts[target] = [];
+                    voteCounts[target].push(voter);
+                });
+                
+                Object.keys(voteCounts).forEach(target => {
+                    const voters = voteCounts[target];
+                    voteHtml += `<li><strong>投给 玩家 ${target} (${voters.length}票):</strong>`;
+                    voteHtml += '<ul>';
+                    voters.forEach(voter => {
+                        const reason = voteReasons[voter] ? ` - <span style="color:#666; font-style:italic;">${voteReasons[voter]}</span>` : '';
+                        voteHtml += `<li>玩家 ${voter}${reason}</li>`;
+                    });
+                    voteHtml += '</ul></li>';
+                });
+                
+                voteHtml += '</ul></div>';
+                detailHtml += voteHtml;
+                eventDiv.innerHTML = detailHtml;
+            } else if (event.statement) {
+
+
+                const stmt = event.statement;
+                // If statement is hidden (should already be handled by backend/frontend filtering)
+                // But double check visibility
+                if (!event.is_hidden) {
+                    detailHtml += `<div style="margin-top:10px; padding:10px; background:white; border-radius:4px; border:1px solid #ddd;">
+                        <strong>发言内容:</strong> "${stmt.content}"
+                    </div>`;
+                    eventDiv.innerHTML = detailHtml;
+                }
+            } else {
+                eventDiv.innerHTML = detailHtml;
+            }
+
+
+            // Render Players Grid
+            const board = document.getElementById('game-board');
+            board.innerHTML = '';
+            
+            // Determine player count
+            // In God view (viewId == -1), roles has all players.
+            // In Player view, we need to know total players.
+            // data.player_states should have all players.
+            
+            let playerIds = [];
+            if (data.player_states) {
+                playerIds = Object.keys(data.player_states).map(Number).sort((a, b) => a - b);
+            } else {
+                // Fallback to 6 if not available (should not happen with updated backend)
+                playerIds = [0, 1, 2, 3, 4, 5];
+            }
+            
+            playerIds.forEach(i => {
+                const card = document.createElement('div');
+                card.className = 'player-card';
+                
+                // Determine Role Display
+                // If role is in data.roles, show it. Otherwise "未知".
+                // If viewId is this player, they always know themselves (handled by backend returning role)
+                
+                const roleKey = roles[i];
+                let roleName = '未知';
+                let badgeClass = 'badge-unknown';
+                
+                if (roleKey) {
+                    roleName = ROLE_NAMES[roleKey] || roleKey;
+                    badgeClass = ROLE_CLASSES[roleKey] || 'badge-unknown';
+                }
+                
+                // Highlight active actors
+                if (!event.is_hidden) {
+                    if (event.actor_id === i) {
+                        card.style.borderColor = '#2196F3'; 
+                        card.style.boxShadow = '0 0 10px #2196F3';
+                    }
+                    if (event.target_id === i) {
+                        card.style.borderColor = '#ff9800';
+                        card.style.boxShadow = '0 0 10px #ff9800';
+                    }
+                }
+                
+                // Player card content
+                // Check if dead
+                // We need to know who is alive. 
+                // In God view, 'roles' has everyone. But we need 'alive' status.
+                // The 'data' object has 'event' which doesn't list all alive players directly in a clean way unless we parse previous events?
+                // Wait, backend 'get_game_step' usually returns full state or we need to deduce it?
+                // The current backend implementation returns 'roles' but not full player state list.
+                // Actually, 'renderBoard' assumes 0-5 players.
+                // We need to know if they are dead.
+                // Let's add 'alive_players' to the step response or deduce it.
+                // For now, let's look at the 'roles' object. If a player is not in 'roles' (in player view), we don't know their role.
+                // But we should know if they are alive or dead (public info).
+                
+                // Hack: We need 'alive_players' list from backend.
+                // Let's check if backend sends it.
+                // In simulator.py get_player_view returns "alive_players".
+                // In simple_server.py get_game_step returns "roles" but not "alive_status".
+                // We should update backend to return alive status for all players.
+                
+                // For now, let's assume if we can't get it, we default to alive?
+                // Or better, let's fix backend to return 'player_states': {0: {alive: true, role: ...}, ...}
+                
+                // Let's rely on 'data.player_states' if available.
+                let isDead = false;
+                let deathReason = null;
+                if (data.player_states && data.player_states[i]) {
+                    isDead = !data.player_states[i].alive;
+                    deathReason = data.player_states[i].death_reason;
+                }
+                
+                if (isDead) {
+                    if (deathReason === 'VOTE') {
+                        card.classList.add('exiled');
+                        roleName += " (放逐)";
+                    } else if (deathReason === 'HUNTER') {
+                        card.classList.add('dead');
+                        roleName += " (枪杀)";
+                    } else if (deathReason === 'WITCH') {
+                        card.classList.add('dead');
+                        roleName += " (毒杀)";
+                    } else if (deathReason === 'WOLF') {
+                        card.classList.add('dead');
+                        roleName += " (刀杀)";
+                    } else {
+                        // Fallback logic for backward compatibility or immediate event check
+                        // Check if current event is VOTE and target is me
+                        if (event.phase === 'DAY_VOTE' && event.target_id === i) {
+                             card.classList.add('exiled');
+                             roleName += " (放逐)";
+                        } else {
+                             card.classList.add('dead');
+                             roleName += " (死亡)";
+                        }
+                    }
+                }
+                
+                // Tags
+                let tagsHtml = '';
+                if (data.player_states && data.player_states[i] && data.player_states[i].tags) {
+                    data.player_states[i].tags.forEach(tag => {
+                        let badgeClass = 'badge-secondary'; // default
+                        if (tag.includes('金水')) badgeClass = 'badge-gold';
+                        else if (tag.includes('银水')) badgeClass = 'badge-silver';
+                        else if (tag.includes('查杀')) badgeClass = 'badge-kill';
+                        
+                        tagsHtml += `<div class="status-badge ${badgeClass}">${tag}</div>`;
+                    });
+                }
+
+                card.innerHTML = `
+                    <div class="role-badge ${badgeClass}">${roleName}</div>
+                    <h3>玩家 ${i}</h3>
+                    <div class="player-tags">${tagsHtml}</div>
+                `;
+
+                board.appendChild(card);
+            });
+
+        }
+
+        function changeView() {
+            // Reload current step with new view
+            loadStep(gameState.currentStep);
+        }
+    </script>
+</body>
+</html>
