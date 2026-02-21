@@ -57,27 +57,66 @@
         @media (max-width: 768px) {
             body { padding: 10px; }
             .container { 
-                grid-template-columns: 1fr; 
-                height: auto; 
                 display: flex; 
                 flex-direction: column; 
+                height: auto; 
+                gap: 15px;
             }
             .panel { 
-                max-height: 400px; 
-                overflow-y: auto; 
+                max-height: none; /* Let content expand */
+                height: auto;
+                overflow: visible; /* Use body scroll */
+                padding: 15px;
             }
+            
+            /* Reorder for mobile: Board first, then Info, then Timeline */
+            .container > div:nth-child(1) { order: 3; } /* Timeline */
+            .container > div:nth-child(2) { order: 1; } /* Board */
+            .container > div:nth-child(3) { order: 2; } /* Info */
+
             #timeline-panel {
-                max-height: 250px; /* Smaller timeline on mobile */
+                max-height: 300px;
+                overflow-y: auto;
+                border: 1px solid #ddd;
             }
+
             .controls { 
-                flex-wrap: wrap; 
+                flex-direction: column; 
+                align-items: stretch; 
+                gap: 10px;
             }
             .controls > * {
-                margin-bottom: 5px;
+                margin-bottom: 0;
+                width: 100%;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
             }
-            /* Adjust input/select sizes for touch */
-            select, button, input {
-                min-height: 36px; /* Better touch target */
+            .controls span, .controls label {
+                display: flex;
+                width: 100%;
+                align-items: center;
+                justify-content: space-between;
+            }
+            .controls input, .controls select {
+                flex-grow: 1;
+                margin-left: 10px;
+                max-width: 70%;
+            }
+            /* Hide the spacer div on mobile */
+            .controls div[style*="flex-grow"] {
+                display: none;
+            }
+            
+            button {
+                width: 100%;
+                padding: 12px;
+                font-size: 1.1em;
+            }
+            
+            /* Adjust game board grid for small screens */
+            .game-board {
+                grid-template-columns: repeat(2, 1fr); /* 2 columns on mobile */
             }
         }
     </style>
