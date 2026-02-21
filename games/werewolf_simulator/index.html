@@ -52,6 +52,34 @@
         
         /* Event Detail */
         .event-detail { margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 4px; border: 1px solid #ffeeba; }
+
+        /* Mobile Responsive */
+        @media (max-width: 768px) {
+            body { padding: 10px; }
+            .container { 
+                grid-template-columns: 1fr; 
+                height: auto; 
+                display: flex; 
+                flex-direction: column; 
+            }
+            .panel { 
+                max-height: 400px; 
+                overflow-y: auto; 
+            }
+            #timeline-panel {
+                max-height: 250px; /* Smaller timeline on mobile */
+            }
+            .controls { 
+                flex-wrap: wrap; 
+            }
+            .controls > * {
+                margin-bottom: 5px;
+            }
+            /* Adjust input/select sizes for touch */
+            select, button, input {
+                min-height: 36px; /* Better touch target */
+            }
+        }
     </style>
 </head>
 <body>
