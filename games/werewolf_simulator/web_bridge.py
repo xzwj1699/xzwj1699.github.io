@@ -3,6 +3,7 @@ import random
 from werewolf.engine import GameEngine, create_default_game
 from werewolf.simulator import GameSimulator
 from werewolf.models import Role, Phase
+from werewolf.logger import GameLogger
 
 # Global state
 class GameStore:
@@ -12,6 +13,24 @@ class GameStore:
         self.roles = {}
 
 store = GameStore()
+
+def get_game_log():
+    try:
+        if not store.simulator or not store.game_history:
+            return {"error": "Game not initialized"}
+        
+        # Using format_log to get string content
+        # Note: GameLogger.format_log logic might need to be adapted if history structure differs slightly
+        # But based on simulator.py, history is compatible.
+        
+        # We need to ensure 'state' is the final state? 
+        # format_log uses state for player config and winner.
+        # store.simulator.engine.state should be the final state after run().
+        
+        log_content = GameLogger.format_log(store.simulator.engine.state, store.game_history)
+        return {"log": log_content}
+    except Exception as e:
+        return {"error": str(e)}
 
 def new_game(seed, player_count):
     try:

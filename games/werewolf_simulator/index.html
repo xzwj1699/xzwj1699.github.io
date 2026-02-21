@@ -124,6 +124,7 @@
 <body>
     <div class="controls">
         <button onclick="newGame()">新对局</button>
+        <button onclick="downloadLog()" id="btn-download-log" disabled>下载日志</button>
         <span>种子: <input type="number" id="seed-input" value="1" style="width: 60px;"></span>
         <span>人数: 
             <select id="player-count-select">
@@ -205,9 +206,18 @@
                 print(f"Error in get_step: {e}")
                 return json.dumps({"error": str(e)})
 
+        def get_log_py():
+            try:
+                data = web_bridge.get_game_log()
+                return json.dumps(data)
+            except Exception as e:
+                print(f"Error in get_log: {e}")
+                return json.dumps({"error": str(e)})
+
         # Expose to JS
         js.new_game_py = new_game_py
         js.get_step_py = get_step_py
+        js.get_log_py = get_log_py
         
         print("PyScript initialized. Ready to play.")
     </py-script>
@@ -266,9 +276,45 @@
                 if (data.total_steps > 0) {
                     await loadStep(0);
                 }
+                
+                // Enable download log button
+                const dlBtn = document.getElementById('btn-download-log');
+                if (dlBtn) dlBtn.disabled = false;
             } catch (e) {
                 console.error("New Game Failed", e);
                 alert("启动新对局失败: " + e.message);
+            }
+        }
+
+        async function downloadLog() {
+            try {
+                if (!window.get_log_py) {
+                    alert("PyScript 尚未就绪");
+                    return;
+                }
+                
+                const resultJson = window.get_log_py();
+                const data = JSON.parse(resultJson);
+                
+                if (data.error) throw new Error(data.error);
+                
+                const content = data.log;
+                const blob = new Blob([content], { type: 'text/plain' });
+                const url = window.URL.createObjectURL(blob);
+                
+                const a = document.createElement('a');
+                a.href = url;
+                const seed = document.getElementById('seed-input').value;
+                const date = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+                a.download = `werewolf_log_${seed}_${date}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                
+            } catch (e) {
+                console.error("Download Log Failed", e);
+                alert("下载日志失败: " + e.message);
             }
         }
 
