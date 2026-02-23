@@ -19,8 +19,8 @@
         .phase-tag { font-size: 0.8em; padding: 2px 5px; border-radius: 4px; background: #eee; color: #555; }
         
         /* Main View */
-        .game-board { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 15px; margin-top: 20px; }
-        .player-card { border: 2px solid #ddd; padding: 15px; border-radius: 8px; text-align: center; position: relative; }
+        .game-board { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 10px; margin-top: 20px; }
+        .player-card { border: 2px solid #ddd; padding: 5px; border-radius: 8px; text-align: center; position: relative; height: 160px; display: flex; flex-direction: column; justify-content: space-between; }
         .player-card.dead { opacity: 0.6; background-color: #f8d7da; border-color: #f5c6cb; }
         .player-card.exiled { opacity: 0.6; background-color: #e2e3e5; border-color: #d6d8db; position: relative; }
         .player-card.wolf { border-color: #dc3545; } /* Only visible if known */
@@ -29,7 +29,7 @@
         .player-card.hunter { border-color: #fd7e14; }
         .player-card.villager { border-color: #28a745; }
         
-        .role-badge { display: inline-block; padding: 3px 8px; border-radius: 12px; color: white; font-weight: bold; font-size: 0.9em; margin-bottom: 5px; }
+        .role-badge { display: inline-block; padding: 2px 5px; border-radius: 12px; color: white; font-weight: bold; font-size: 0.75em; margin-bottom: 5px; width: 90%; margin-left: auto; margin-right: auto; line-height: 1.2; }
         .badge-wolf { background-color: #dc3545; }
         .badge-seer { background-color: #17a2b8; }
         .badge-witch { background-color: #6f42c1; }
@@ -38,10 +38,24 @@
         .badge-unknown { background-color: #6c757d; }
         
         /* Status Badges */
-        .status-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 3px; margin-top: 2px; color: #fff; }
+        .status-badge { display: inline-block; padding: 1px 4px; border-radius: 4px; font-size: 0.7em; margin-right: 2px; margin-top: 2px; color: #fff; }
         .badge-gold { background-color: #ffc107; color: #212529; }
         .badge-silver { background-color: #adb5bd; }
         .badge-kill { background-color: #343a40; }
+        
+        /* Seer Claim Badge */
+        .badge-claim-seer { 
+            background-color: #17a2b8; 
+            color: white; 
+            border: 1px solid white; 
+            box-shadow: 0 0 3px rgba(23, 162, 184, 0.5);
+            font-weight: bold;
+            padding: 2px 4px;
+            border-radius: 8px;
+            margin-top: 2px;
+            display: inline-block;
+            font-size: 0.75em;
+        }
         
         /* Controls */
         .controls { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; }
@@ -179,7 +193,7 @@
         [[fetch]]
         from = "./werewolf"
         to_folder = "werewolf"
-        files = ["__init__.py", "engine.py", "models.py", "simulator.py", "strategy.py", "logger.py"]
+        files = ["__init__.py", "engine.py", "models.py", "simulator.py", "strategy.py", "logger.py", "estimation.py"]
     </py-config>
 
     <!-- PyScript Code -->
@@ -299,14 +313,34 @@
                 if (data.error) throw new Error(data.error);
                 
                 const content = data.log;
+                const seed = document.getElementById('seed-input').value;
+                const date = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+                const filename = `werewolf_log_${seed}_${date}.txt`;
+
+                // Try server save first (Debug Mode)
+                try {
+                    // Try to save to server root (where debug_server.py is running)
+                    const resp = await fetch('/api/save_log', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({filename: filename, content: content})
+                    });
+                    if (resp.ok) {
+                        const resData = await resp.json();
+                        alert(`日志已保存到服务器文件夹: ${resData.file}`);
+                        return; // Stop if saved to server
+                    }
+                } catch (e) {
+                    // Ignore error, proceed to download
+                }
+
+                // Fallback to browser download
                 const blob = new Blob([content], { type: 'text/plain' });
                 const url = window.URL.createObjectURL(blob);
                 
                 const a = document.createElement('a');
                 a.href = url;
-                const seed = document.getElementById('seed-input').value;
-                const date = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-                a.download = `werewolf_log_${seed}_${date}.txt`;
+                a.download = filename;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -728,8 +762,8 @@
                     }
                 }
                 
-                // Tags
-                let tagsHtml = '';
+                // Tags separation
+                let statusTagsHtml = '';
                 if (data.player_states && data.player_states[i] && data.player_states[i].tags) {
                     data.player_states[i].tags.forEach(tag => {
                         let badgeClass = 'badge-secondary'; // default
@@ -737,14 +771,53 @@
                         else if (tag.includes('银水')) badgeClass = 'badge-silver';
                         else if (tag.includes('查杀')) badgeClass = 'badge-kill';
                         
-                        tagsHtml += `<div class="status-badge ${badgeClass}">${tag}</div>`;
+                        statusTagsHtml += `<div class="status-badge ${badgeClass}">${tag}</div>`;
                     });
                 }
 
+                // Check for Seer Claim (Client-side inference)
+                let isSeerClaimer = false;
+                
+                // 1. Check existing tags for Seer actions
+                if (data.player_states) {
+                    Object.values(data.player_states).forEach(pState => {
+                        if (pState.tags) {
+                            pState.tags.forEach(t => {
+                                if (t.includes(`(${i})`)) { // Found action by player i
+                                    if (t.includes('查杀') || t.includes('金水')) {
+                                        isSeerClaimer = true;
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+                
+                // 2. Check current event statement
+                if (!event.is_hidden && event.statement && event.actor_id === i) {
+                    if (event.statement.claimed_role === 'SEER') {
+                        isSeerClaimer = true;
+                    }
+                }
+
+                let seerTagHtml = '';
+                if (isSeerClaimer) {
+                    seerTagHtml = `<div class="badge-claim-seer">跳预言家</div>`;
+                }
+
                 card.innerHTML = `
-                    <div class="role-badge ${badgeClass}">${roleName}</div>
-                    <h3>玩家 ${i}</h3>
-                    <div class="player-tags">${tagsHtml}</div>
+                    <div style="flex-grow: 0;">
+                        <div class="role-badge ${badgeClass}">${roleName}</div>
+                        <h3 style="margin: 5px 0;">玩家 ${i}</h3>
+                    </div>
+                    <div class="player-tags" style="flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; align-items: center; width: 100%; padding-bottom: 5px;">
+                        <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 2px; width: 100%;">
+                            ${statusTagsHtml}
+                        </div>
+                        <div style="min-height: 28px; display: flex; align-items: flex-end; justify-content: center; width: 100%;">
+                            ${seerTagHtml}
+                        </div>
+                    </div>
                 `;
 
                 board.appendChild(card);

@@ -1,21 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import random
 
-from .models import Action, ActionType, GameState, Phase, Role, Recommendation, Statement, PlayerPrivate
+from .models import Action, ActionType, GameState, Phase, Role, Recommendation, Statement, PlayerPrivate, Faction
 from .engine import alive_players, get_player, role_of
+from .estimation import WinRateEstimator
 
 @dataclass
 class SimpleStrategy:
     rng: random.Random
+    estimator: WinRateEstimator = field(default_factory=lambda: WinRateEstimator(num_simulations=50))
 
     def recommend(self, state: GameState, actor_id: int) -> Recommendation:
         # Wrapper to return Recommendation object
         action = self._choose_action(state, actor_id)
         reason = self._generate_reason(state, actor_id, action)
-        return Recommendation(action=action, reason=reason, win_rate_estimate=0.5)
+        win_rate = self.estimator.estimate(state, actor_id)
+        return Recommendation(action=action, reason=reason, win_rate_estimate=win_rate)
 
     def _choose_action(self, state: GameState, actor_id: int) -> Action:
         if state.phase == Phase.NIGHT_WOLF:
@@ -330,11 +333,24 @@ class SimpleStrategy:
 
         # 3. Wolf Strategy: Maybe claim Seer (Jump)
         if my_role == Role.WOLF:
-            wolves = [p.player_id for p in alive_players(state) if p.role == Role.WOLF]
-            jumper_id = wolves[0] if wolves else -1
+            # Check if any teammate has claimed Seer in the past (History Check)
+            teammate_jumped = False
+            for e in state.public_events:
+                 if e.statement and e.statement.claimed_role == Role.SEER:
+                      # Check if the claimer was a wolf teammate
+                      if role_of(state, e.statement.actor_id) == Role.WOLF and e.statement.actor_id != actor_id:
+                           teammate_jumped = True
+                           break
             
-            if actor_id == jumper_id:
-                return self._create_fake_seer_statement(state, actor_id)
+            # Strategy Update: Single Jumper Policy
+            # If a teammate has already jumped (alive or dead), other wolves should NOT jump.
+            # This prevents "chain feeding" where wolves die one by one claiming Seer.
+            if not teammate_jumped:
+                wolves = [p.player_id for p in alive_players(state) if p.role == Role.WOLF]
+                jumper_id = wolves[0] if wolves else -1
+                
+                if actor_id == jumper_id:
+                    return self._create_fake_seer_statement(state, actor_id)
                 
         # 4. Hunter Strategy: Reveal if targeted
         if my_role == Role.HUNTER:
@@ -396,26 +412,77 @@ class SimpleStrategy:
         
         if not non_wolves: return actor_id # Should not happen
         
-        # 1. Consistency Check (Priority High): Did I accuse someone in speech?
-        # If I said "I suspect X", I should vote X. This is crucial for disguise.
+        # --- NEW STRATEGY: Coordinate Voting for Wolves ---
+        
+        # 1. Identify "Jumper Wolf" (Teammate claiming Seer)
+        jumper_wolf = -1
+        jumper_target = -1
+        
+        # Scan history for active Seer claim by teammate
+        for e in reversed(state.public_events):
+            # Check latest claim in current or previous day
+            if e.statement and e.statement.claimed_role == Role.SEER:
+                speaker = e.statement.actor_id
+                if speaker in teammates and get_player(state, speaker).alive:
+                    jumper_wolf = speaker
+                    # Find who they accused (Kill check) or cleared (Gold Water)
+                    # Actually, if they accused someone, we vote that person.
+                    # If they cleared someone, we don't vote that person (usually).
+                    # But we need a target.
+                    # If Jumper accused X, X is priority target.
+                    for target, is_wolf in e.statement.claimed_checks.items():
+                        if is_wolf and get_player(state, target).alive:
+                            jumper_target = target
+                            break
+                    break
+        
+        # 2. Identify Real Seer (Enemy Seer)
+        enemy_seer = -1
+        for e in reversed(state.public_events):
+            if e.statement and e.statement.claimed_role == Role.SEER:
+                speaker = e.statement.actor_id
+                if speaker not in teammates and get_player(state, speaker).alive:
+                    enemy_seer = speaker
+                    break
+        
+        # 3. Decision Logic
+        
+        # Priority A: If Jumper Wolf exists and accused someone, Follow Jumper (Vote Accused).
+        # This creates consistency: "I believe Seer (Jumper), so I vote his Wolf".
+        if jumper_wolf != -1 and jumper_target != -1:
+             return jumper_target
+             
+        # Priority B: If Jumper Wolf exists but didn't accuse anyone (Gold Water round),
+        # Vote for the Enemy Seer (Real Seer) to protect Jumper.
+        if jumper_wolf != -1 and enemy_seer != -1:
+            return enemy_seer
+            
+        # Priority C: If no Jumper (or Jumper dead), but Enemy Seer is alive.
+        # Vote Enemy Seer (to kill Threat).
+        if enemy_seer != -1:
+            return enemy_seer
+            
+        # Priority D: Kill other Gods (Witch/Hunter) if revealed
+        known_gods = []
+        for e in state.public_events:
+            if e.statement and e.statement.claimed_role in [Role.WITCH, Role.HUNTER]:
+                claimer = e.statement.actor_id
+                if claimer in non_wolves and get_player(state, claimer).alive:
+                     known_gods.append(claimer)
+        
+        if known_gods:
+            return known_gods[0]
+            
+        # Priority E: Consistency with self-speech (if I accused someone)
         for e in reversed(state.public_events):
             if e.day == state.day and e.actor_id == actor_id and e.statement:
                 import re
-                # Match various accusation patterns
-                # "我觉得 X 比较可疑", "我怀疑 X", "X 可能是狼", "X 应该是狼"
-                # Pattern: (我觉得|我怀疑|认出|认为).*?(\d+).*(可疑|狼|坏人)
-                # Or simpler: just look for the number and some keywords?
-                # Let's use a robust regex.
-                
                 content = e.statement.content
-                # Pattern 1: Explicit suspect
                 match = re.search(r"(我觉得|我怀疑|认出|认为|建议查杀).*?(\d+)", content)
                 if not match:
-                    # Pattern 2: X is Wolf
                     match = re.search(r"(\d+).*?(是狼|铁狼|悍跳|可疑)", content)
                 
                 if match:
-                    # Extract the number from the group that is digits
                     for group in match.groups():
                         if group.isdigit():
                             suspect = int(group)
@@ -423,73 +490,7 @@ class SimpleStrategy:
                                 return suspect
                             break
 
-        # 2. Identify Threats (Real Gods)
-        known_gods = []
-        for e in state.public_events:
-            if e.statement and e.statement.claimed_role in [Role.SEER, Role.WITCH, Role.HUNTER]:
-                claimer = e.statement.actor_id
-                if claimer in non_wolves: # Claimer is not a wolf -> Real God (or Villager acting up)
-                     if claimer not in known_gods:
-                         known_gods.append(claimer)
-                         
-        # Filter alive gods
-        alive_gods = [pid for pid in known_gods if get_player(state, pid).alive]
-        
-        # Strategy: Focus fire on Gods
-        if alive_gods:
-            # OPTIMIZATION: If the God is highly trusted (e.g. Witch who revealed Silver Water), 
-            # and we are not in a position to win a vote against them (e.g. they have majority support),
-            # we should avoid voting for them to avoid exposing ourselves as Wolves.
-            # Instead, we should vote for the person our "Fake Seer" teammate is accusing?
-            # Or "Bus" (sell out) a teammate?
-            # Or vote for a random villager to split votes?
-            
-            # Check if any Wolf is claiming Seer (Jumper)
-            jumper_wolf = -1
-            jumper_target = -1
-            
-            # Find my teammate who is claiming Seer
-            for e in reversed(state.public_events):
-                if e.day == state.day and e.statement and e.statement.claimed_role == Role.SEER:
-                    speaker = e.statement.actor_id
-                    if speaker in teammates:
-                        jumper_wolf = speaker
-                        # Find who they accused (Kill check)
-                        for target, is_wolf in e.statement.claimed_checks.items():
-                            if is_wolf and get_player(state, target).alive:
-                                jumper_target = target
-                                break
-                        break
-            
-            # 2.1. If I am NOT the jumper, and there is a jumper targeting someone.
-            if jumper_wolf != -1 and jumper_target != -1 and actor_id != jumper_wolf:
-                # If there is a clear Witch with Silver Water (and it's NOT the jumper), 
-                # then voting for the Witch is suicide.
-                # Check for Witch claim
-                witch_active = False
-                for e in state.public_events:
-                    if e.statement and e.statement.claimed_role == Role.WITCH:
-                        if e.statement.actor_id in non_wolves and get_player(state, e.statement.actor_id).alive:
-                            witch_active = True
-                            break
-                            
-                if witch_active:
-                    # Disguise Strategy: Vote for jumper's target (as if I am a confused Villager)
-                    # Or Bus teammate? No, busing teammate is risky if teammate is jumper.
-                    # Voting for jumper's target makes me look like I believe the jumper.
-                    if jumper_target not in teammates:
-                        return jumper_target
-
-            return alive_gods[0] # Default: Aggressive play (Kill God)
-            
-        # 3. If no exposed Gods, vote for random Villager
-        # Improvement: Vote for the person who is most "suspect" by others? (To blend in)
-        # Or vote for someone who is NOT suspected by others (to keep suspect alive for mislynch)?
-        # Simple: Random Good Guy.
-        
-        # Priority 2: If Real Seer is dead (not in alive_gods), prioritize Villagers over "Fake Seer" teammates?
-        # No, teammates are excluded from 'non_wolves'.
-        
+        # Priority F: Random Villager
         return self.rng.choice(non_wolves)
 
     def _create_witch_statement(self, state: GameState, actor_id: int, private: PlayerPrivate) -> Action:
@@ -559,52 +560,94 @@ class SimpleStrategy:
         return Action(action_type=ActionType.SPEAK, actor_id=actor_id, statement=stmt)
 
     def _create_fake_seer_statement(self, state: GameState, actor_id: int) -> Action:
-        # Fake logic: 
-        # 1. Claim Seer
-        # 2. Fabricate results for random alive players
-        
-        # Strategy Update:
-        # - Avoid checking teammates as Wolf (unless Deep Wolf strategy, but risky in low numbers).
-        # - Avoid checking teammates as Good (unless necessary to protect).
-        # - Ideally, check Good guys as Wolf (Kill) or Good (Gold Water to confuse).
+        # Improved Fake Seer Strategy (User Request Optimized)
+        # 1. Avoid accusing known Gods (Witch/Hunter/Silver Water) - unless desperate.
+        # 2. Prioritize accusing Unknown players (to push Kill).
+        # 3. Or give Gold Water to Teammates (to bond/protect).
         
         alive = alive_players(state)
         teammates = [p.player_id for p in alive if p.role == Role.WOLF]
-        non_wolves = [p.player_id for p in alive if p.role != Role.WOLF]
         
-        # Determine target
+        # History Check: What have I claimed before?
+        my_claimed_checks = {}
+        for e in state.public_events:
+             if e.statement and e.statement.actor_id == actor_id and e.statement.claimed_role == Role.SEER:
+                 my_claimed_checks.update(e.statement.claimed_checks)
+
+        # Identify Known Good / Gods to AVOID accusing
+        known_good_identities = set()
+        for e in state.public_events:
+            if e.statement and e.statement.claimed_role in [Role.WITCH, Role.HUNTER]:
+                claimer = e.statement.actor_id
+                if get_player(state, claimer).alive:
+                     known_good_identities.add(claimer)
+            if e.statement and e.statement.claimed_role == Role.WITCH:
+                 import re
+                 match = re.search(r"救了\s*(\d+)", e.statement.content)
+                 if match:
+                     saved_id = int(match.group(1))
+                     known_good_identities.add(saved_id)
+
+        # Filter Unknowns: Alive - Teammates - Known Good - Self - Already Checked
+        unknowns = []
+        for p in alive:
+            pid = p.player_id
+            if pid != actor_id and pid not in teammates and pid not in known_good_identities and pid not in my_claimed_checks:
+                unknowns.append(pid)
+        
+        # Decision Logic
         target = -1
         is_wolf = False
         
-        # If teammates are few (<=2), avoid sacrificing them.
-        if len(teammates) <= 2:
-             # Target a good guy
-             if non_wolves:
-                 target = self.rng.choice(non_wolves)
-                 # 70% chance to say Wolf (Kill), 30% Good (Gold Water)
-                 is_wolf = (self.rng.random() < 0.7)
-        else:
-             # Random strategy
-             candidates = [p.player_id for p in alive if p.player_id != actor_id]
-             target = self.rng.choice(candidates)
-             
-             if target in teammates:
-                 # If targeting teammate, usually say Good. Say Wolf only if Deep Wolf (rare).
-                 is_wolf = False
-             else:
-                 is_wolf = self.rng.choice([True, False])
+        can_gold_teammate = len([t for t in teammates if t != actor_id and t not in my_claimed_checks]) > 0
+        can_accuse_unknown = len(unknowns) > 0
         
-        # Fallback if logic failed
+        rand_val = self.rng.random()
+        
+        # Strategy 1: Gold Water Teammate (40%)
+        # "发金水给队友以拉拢支持"
+        if can_gold_teammate and (rand_val < 0.4 or not can_accuse_unknown):
+            candidates = [t for t in teammates if t != actor_id and t not in my_claimed_checks]
+            if candidates:
+                target = self.rng.choice(candidates)
+                is_wolf = False
+        
+        # Strategy 2: Accuse Unknown (40%)
+        # "查杀一个身份不明的玩家"
+        elif can_accuse_unknown and rand_val < 0.8:
+            target = self.rng.choice(unknowns)
+            is_wolf = True
+            
+        # Strategy 3: Gold Water Unknown (20%)
+        # "或发金水给不明身份玩家（混淆视听）"
+        elif can_accuse_unknown:
+            target = self.rng.choice(unknowns)
+            is_wolf = False
+            
+        # Fallback: If no unknowns and no unchecked teammates?
         if target == -1:
-             target = self.rng.choice([p.player_id for p in alive if p.player_id != actor_id])
-             is_wolf = False
+             # Must check someone. Known Gods? Or Dead people (fake check)?
+             # Check a known God as Wolf (last resort)
+             candidates = [p.player_id for p in alive if p.player_id != actor_id and p.player_id not in my_claimed_checks]
+             if candidates:
+                 target = self.rng.choice(candidates)
+                 # If they are known good, we must accuse them to have a chance?
+                 if target in known_good_identities:
+                     is_wolf = True
+                 else:
+                     is_wolf = True # Aggressive fallback
+             else:
+                 # Everyone checked?
+                 pass
 
-        role_str = "狼人" if is_wolf else "好人"
-        content = f"我是预言家，昨晚验了 {target} 是 {role_str}"
-        
-        checks = {target: is_wolf}
-        stmt = Statement(actor_id=actor_id, claimed_role=Role.SEER, claimed_checks=checks, content=content)
-        return Action(action_type=ActionType.SPEAK, actor_id=actor_id, statement=stmt)
+        if target != -1:
+            role_str = "狼人" if is_wolf else "好人"
+            content = f"我是预言家，昨晚验了 {target} 是 {role_str}"
+            checks = {target: is_wolf}
+            stmt = Statement(actor_id=actor_id, claimed_role=Role.SEER, claimed_checks=checks, content=content)
+            return Action(action_type=ActionType.SPEAK, actor_id=actor_id, statement=stmt)
+        else:
+             return Action(action_type=ActionType.SPEAK, actor_id=actor_id, statement=Statement(actor_id=actor_id, content="我是预言家，昨晚没验人（出错了）"))
 
     def update_beliefs(self, state: GameState, statement: Statement):
         # Update trust scores for ALL players based on this statement
