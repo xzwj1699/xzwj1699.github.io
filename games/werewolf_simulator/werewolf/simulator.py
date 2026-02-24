@@ -132,13 +132,21 @@ class GameSimulator:
         # Populate history
         self.history = []
         for e in state.public_events:
+            rec_data = None
+            if e.recommendation:
+                rec_data = {
+                    "win_rate": e.recommendation.win_rate_estimate,
+                    "reason": e.recommendation.reason
+                }
+            
             self.history.append({
                 "day": e.day,
                 "phase": e.phase.value,
                 "description": e.description,
                 "actor_id": e.actor_id,
                 "target_id": e.target_id,
-                "votes": e.votes
+                "votes": e.votes,
+                "recommendation": rec_data
             })
 
     def record_history(self, state: GameState):
